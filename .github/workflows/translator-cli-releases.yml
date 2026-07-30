@@ -1,0 +1,244 @@
+name: Sync upstream and release translator-cli
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build even when upstream has no new inference changes
+        type: boolean
+        default: true
+
+concurrency:
+  group: translator-cli-releases
+  cancel-in-progress: false
+
+# Synchronizing main and publishing releases both require repository writes.
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      build: ${{ steps.sync.outputs.build }}
+      commit: ${{ steps.sync.outputs.commit }}
+      upstream_commit: ${{ steps.sync.outputs.upstream_commit }}
+      release_tag: ${{ steps.sync.outputs.release_tag }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream main
+        id: sync
+        env:
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_build }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream https://github.com/mozilla/translations.git
+          git fetch upstream main
+
+          upstream_commit=$(git rev-parse upstream/main)
+          merge_base=$(git merge-base HEAD upstream/main)
+          incoming_files=$(git diff --name-only "$merge_base..upstream/main")
+
+          relevant=false
+          if grep -Eq '^(inference/|\.gitmodules$)' <<< "$incoming_files"; then
+            relevant=true
+          fi
+
+          if ! git merge-base --is-ancestor upstream/main HEAD; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git merge --no-edit upstream/main
+            git push origin HEAD:main
+          fi
+
+          commit=$(git rev-parse HEAD)
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            relevant=true
+          fi
+
+          echo "build=$relevant" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
+          echo "release_tag=translator-cli-${upstream_commit:0:12}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            executable: inference/build/src/app/translator-cli
+          - os: macos-15-intel
+            platform: macos-x86_64
+            executable: inference/build/src/app/translator-cli
+          - os: windows-2022
+            platform: windows-x86_64
+            executable: inference/build/src/app/Release/translator-cli.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout synchronized revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+
+      - name: Initialize inference submodules
+        shell: bash
+        run: |
+          # Avoid checking out training-only dependencies.
+          git submodule update --init --recursive --depth 1 \
+            inference/3rd_party/ssplit-cpp \
+            inference/marian-fork/src/3rd_party/fbgemm \
+            inference/marian-fork/src/3rd_party/intgemm \
+            inference/marian-fork/src/3rd_party/nccl \
+            inference/marian-fork/src/3rd_party/onnxjs \
+            inference/marian-fork/src/3rd_party/ruy \
+            inference/marian-fork/src/3rd_party/sentencepiece \
+            inference/marian-fork/src/3rd_party/simd_utils \
+            inference/marian-fork/src/3rd_party/simple-websocket-server
+
+      - name: Apply modern macOS compatibility fixes
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # Apple headers define TARGET_OS_MAC even when its value is false.
+          sed -i '' 's/defined(MACOS) || defined(TARGET_OS_MAC)/defined(MACOS)/' inference/marian-fork/src/3rd_party/zlib/zutil.h
+          # Modern Clang rejects these initialized locals as VLA bounds.
+          sed -i '' 's/unsigned int MAX_NUM_FRAMES = 1024;/constexpr unsigned int MAX_NUM_FRAMES = 1024;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
+          sed -i '' 's/unsigned int MAX_FUNCNAME_SIZE = 4096;/constexpr unsigned int MAX_FUNCNAME_SIZE = 4096;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
+
+      - name: Apply Windows PCRE2 compatibility fix
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Marian overwrites global C++ flags, so define PCRE2_STATIC on its consumer.
+          cat >> inference/3rd_party/ssplit-cpp/src/CMakeLists.txt <<'CMAKE'
+          if(MSVC AND SSPLIT_USE_INTERNAL_PCRE2)
+            target_compile_definitions(ssplit PRIVATE PCRE2_STATIC)
+          endif()
+          CMAKE
+          # The original dependency condition silently disables ONNX SGEMM on Windows.
+          sed -i '/CMAKE_DEPENDENT_OPTION(USE_ONNX_SGEMM/{n;s/USE_WASM_COMPATIBLE_SOURCE/COMPILE_CPU/;}' inference/marian-fork/CMakeLists.txt
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          # Marian requires BLAS for full model inference.
+          sudo apt-get update
+          sudo apt-get install --yes libopenblas-dev
+
+      # Firefox production models require FBGEMM. Windows uses ONNX SGEMM to
+      # avoid Ruy and FBGEMM defining conflicting cpuinfo targets.
+      - name: Configure
+        shell: bash
+        run: >-
+          cmake -S inference -B inference/build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_ARCH=x86-64-v2
+          -DUSE_FBGEMM=on
+          -DUSE_STATIC_LIBS=on
+          -DCOMPILE_CPU=on
+          -DCOMPILE_CUDA=off
+          -DGIT_SUBMODULE=off
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DUSE_ONNX_SGEMM=on' || '' }}
+
+      - name: Build internal PCRE2 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake --build inference/build --config Release --target pcre2
+          $library = Get-ChildItem inference/build -Recurse -Filter pcre2-8-static.lib | Select-Object -First 1
+          if (-not $library) {
+            throw "Could not find the PCRE2 static library"
+          }
+          Copy-Item $library.FullName inference/build/lib/pcre2-8.lib
+
+      - name: Build translator-cli
+        # Unrestricted parallelism exhausts memory on hosted Linux runners.
+        run: cmake --build inference/build --config Release --parallel 2 --target translator-cli
+
+      - name: Verify executable
+        shell: bash
+        run: '"${{ matrix.executable }}" --version'
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p package dist
+          cp "${{ matrix.executable }}" package/
+          cp LICENSE package/
+          tar -czf "dist/translator-cli-${{ matrix.platform }}.tar.gz" -C package .
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package, dist
+          Copy-Item "${{ matrix.executable }}" package/
+          Copy-Item LICENSE package/
+          Compress-Archive -Path package/* -DestinationPath "dist/translator-cli-${{ matrix.platform }}.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: translator-cli-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [sync, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: translator-cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.sync.outputs.release_tag }}
+          TARGET: ${{ needs.sync.outputs.commit }}
+          UPSTREAM_COMMIT: ${{ needs.sync.outputs.upstream_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes=$(cat <<EOF
+          Note: macOS binary is untested.
+
+          Upstream revision: https://github.com/mozilla/translations/commit/$UPSTREAM_COMMIT
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "translator-cli ${UPSTREAM_COMMIT:0:12}" --notes "$notes"
+          else
+            gh release create "$TAG" dist/* \
+              --target "$TARGET" \
+              --title "translator-cli ${UPSTREAM_COMMIT:0:12}" \
+              --notes "$notes"
+          fi
