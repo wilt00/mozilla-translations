@@ -93,7 +93,25 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.sync.outputs.commit }}
-          submodules: recursive
+
+      - name: Initialize inference submodules
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 \
+            inference/3rd_party/ssplit-cpp \
+            inference/marian-fork/src/3rd_party/fbgemm \
+            inference/marian-fork/src/3rd_party/intgemm \
+            inference/marian-fork/src/3rd_party/nccl \
+            inference/marian-fork/src/3rd_party/onnxjs \
+            inference/marian-fork/src/3rd_party/ruy \
+            inference/marian-fork/src/3rd_party/sentencepiece \
+            inference/marian-fork/src/3rd_party/simd_utils \
+            inference/marian-fork/src/3rd_party/simple-websocket-server
+
+      - name: Apply modern macOS zlib compatibility fix
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sed -i '' 's/defined(MACOS) || defined(TARGET_OS_MAC)/defined(MACOS)/' inference/marian-fork/src/3rd_party/zlib/zutil.h
 
       - name: Configure
         shell: bash
@@ -109,8 +127,19 @@ jobs:
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on' || '' }}
 
+      - name: Build internal PCRE2 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake --build inference/build --config Release --target pcre2
+          $library = Get-ChildItem inference/build -Recurse -Filter pcre2-8-static.lib | Select-Object -First 1
+          if (-not $library) {
+            throw "Could not find the PCRE2 static library"
+          }
+          Copy-Item $library.FullName inference/build/lib/pcre2-8.lib
+
       - name: Build translator-cli
-        run: cmake --build inference/build --config Release --parallel --target translator-cli
+        run: cmake --build inference/build --config Release --parallel 2 --target translator-cli
 
       - name: Verify executable
         shell: bash
