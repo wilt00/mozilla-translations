@@ -108,10 +108,13 @@ jobs:
             inference/marian-fork/src/3rd_party/simd_utils \
             inference/marian-fork/src/3rd_party/simple-websocket-server
 
-      - name: Apply modern macOS zlib compatibility fix
+      - name: Apply modern macOS compatibility fixes
         if: runner.os == 'macOS'
         shell: bash
-        run: sed -i '' 's/defined(MACOS) || defined(TARGET_OS_MAC)/defined(MACOS)/' inference/marian-fork/src/3rd_party/zlib/zutil.h
+        run: |
+          sed -i '' 's/defined(MACOS) || defined(TARGET_OS_MAC)/defined(MACOS)/' inference/marian-fork/src/3rd_party/zlib/zutil.h
+          sed -i '' 's/unsigned int MAX_NUM_FRAMES = 1024;/constexpr unsigned int MAX_NUM_FRAMES = 1024;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
+          sed -i '' 's/unsigned int MAX_FUNCNAME_SIZE = 4096;/constexpr unsigned int MAX_FUNCNAME_SIZE = 4096;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -132,7 +135,6 @@ jobs:
           -DGIT_SUBMODULE=off
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DCMAKE_CXX_FLAGS=-DPCRE2_STATIC -DUSE_ONNX_SGEMM=on' || '' }}
-          ${{ runner.os == 'macOS' && '-DCMAKE_CXX_FLAGS=-Wno-error=vla-cxx-extension' || '' }}
 
       - name: Build internal PCRE2 on Windows
         if: runner.os == 'Windows'
