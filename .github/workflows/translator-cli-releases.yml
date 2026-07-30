@@ -125,7 +125,8 @@ jobs:
           -DCOMPILE_CUDA=off
           -DGIT_SUBMODULE=off
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on' || '' }}
+          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DCMAKE_CXX_FLAGS=/DPCRE2_STATIC' || '' }}
+          ${{ runner.os == 'macOS' && '-DCMAKE_CXX_FLAGS=-Wno-error=vla-cxx-extension' || '' }}
 
       - name: Build internal PCRE2 on Windows
         if: runner.os == 'Windows'
