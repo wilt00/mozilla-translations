@@ -116,6 +116,16 @@ jobs:
           sed -i '' 's/unsigned int MAX_NUM_FRAMES = 1024;/constexpr unsigned int MAX_NUM_FRAMES = 1024;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
           sed -i '' 's/unsigned int MAX_FUNCNAME_SIZE = 4096;/constexpr unsigned int MAX_FUNCNAME_SIZE = 4096;/' inference/marian-fork/src/3rd_party/ExceptionWithCallStack.cpp
 
+      - name: Apply Windows PCRE2 compatibility fix
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cat >> inference/3rd_party/ssplit-cpp/src/CMakeLists.txt <<'CMAKE'
+          if(MSVC AND SSPLIT_USE_INTERNAL_PCRE2)
+            target_compile_definitions(ssplit PRIVATE PCRE2_STATIC)
+          endif()
+          CMAKE
+
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -134,7 +144,7 @@ jobs:
           -DCOMPILE_CUDA=off
           -DGIT_SUBMODULE=off
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DCMAKE_CXX_FLAGS=-DPCRE2_STATIC -DUSE_ONNX_SGEMM=on' || '' }}
+          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DUSE_ONNX_SGEMM=on' || '' }}
 
       - name: Build internal PCRE2 on Windows
         if: runner.os == 'Windows'
