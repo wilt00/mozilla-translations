@@ -125,6 +125,7 @@ jobs:
             target_compile_definitions(ssplit PRIVATE PCRE2_STATIC)
           endif()
           CMAKE
+          sed -i '/CMAKE_DEPENDENT_OPTION(USE_ONNX_SGEMM/{n;s/USE_WASM_COMPATIBLE_SOURCE/COMPILE_CPU/;}' inference/marian-fork/CMakeLists.txt
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
