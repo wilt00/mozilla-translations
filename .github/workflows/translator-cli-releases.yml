@@ -29,7 +29,7 @@ jobs:
       release_tag: ${{ steps.sync.outputs.release_tag }}
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout synchronized revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.sync.outputs.commit }}
           submodules: recursive
@@ -106,6 +106,8 @@ jobs:
           -DCOMPILE_CPU=on
           -DCOMPILE_CUDA=off
           -DGIT_SUBMODULE=off
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on' || '' }}
 
       - name: Build translator-cli
         run: cmake --build inference/build --config Release --parallel --target translator-cli
