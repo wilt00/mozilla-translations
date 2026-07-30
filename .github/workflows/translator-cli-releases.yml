@@ -113,6 +113,12 @@ jobs:
         shell: bash
         run: sed -i '' 's/defined(MACOS) || defined(TARGET_OS_MAC)/defined(MACOS)/' inference/marian-fork/src/3rd_party/zlib/zutil.h
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libopenblas-dev
+
       - name: Configure
         shell: bash
         run: >-
@@ -125,7 +131,7 @@ jobs:
           -DCOMPILE_CUDA=off
           -DGIT_SUBMODULE=off
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DCMAKE_CXX_FLAGS=/DPCRE2_STATIC' || '' }}
+          ${{ runner.os == 'Windows' && '-DSSPLIT_USE_INTERNAL_PCRE2=on -DCMAKE_CXX_FLAGS=-DPCRE2_STATIC -DUSE_RUY=on -DUSE_RUY_SGEMM=on' || '' }}
           ${{ runner.os == 'macOS' && '-DCMAKE_CXX_FLAGS=-Wno-error=vla-cxx-extension' || '' }}
 
       - name: Build internal PCRE2 on Windows
